@@ -5,9 +5,6 @@ using System.Diagnostics;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
-using Babe.Lua;
-using Babe.Lua.Package;
-using Babe.Lua.DataModel;
 using Microsoft.VisualStudio.Editor;
 using Microsoft.VisualStudio.Language.Intellisense;
 using Microsoft.VisualStudio.OLE.Interop;
@@ -15,13 +12,17 @@ using Microsoft.VisualStudio.Text.Editor;
 using Microsoft.VisualStudio.TextManager.Interop;
 using Microsoft.VisualStudio.Utilities;
 using Microsoft.VisualStudio.Text;
+using Babe.Lua.Intellisense;
+using Babe.Lua.Package;
+using Babe.Lua.DataModel;
+using Babe.Lua.Helper;
 
 namespace Babe.Lua.Editor
 {
 	[Export(typeof(IVsTextViewCreationListener))]
 	[ContentType("Lua")]
 	[TextViewRole(PredefinedTextViewRoles.Interactive)]
-	internal sealed class TextViewCreationListener : IVsTextViewCreationListener , IDisposable
+	internal sealed class TextViewCreationListener : IVsTextViewCreationListener, IDisposable
 	{
 		[Import]
 		public IVsEditorAdaptersFactoryService AdaptersFactory { get; private set; }
@@ -30,6 +31,8 @@ namespace Babe.Lua.Editor
 		public ICompletionBroker CompletionBroker { get; private set; }
 
 		public static event EventHandler<FileContentChangedEventArgs> FileContentChanged;
+
+        public 
 
 		Babe.Lua.Intellisense.CompletionCommandFilter CompletionFilter;
 
@@ -53,9 +56,9 @@ namespace Babe.Lua.Editor
 			textViewAdapter.AddCommandFilter(CompletionFilter, out next);
 			CompletionFilter.Next = next;
 
-			//var filter = new CommandFilter(view);
-			//textViewAdapter.AddCommandFilter(filter, out next);
-			//filter.Next = next;
+            var filter = new EditorCommandFilter(view);
+            textViewAdapter.AddCommandFilter(filter, out next);
+            filter.Next = next;
 
 			EditorReport.TextViewCreated(view);
 		}
@@ -74,7 +77,10 @@ namespace Babe.Lua.Editor
 		{
 			Irony.Parsing.Parser parser = new Irony.Parsing.Parser(Grammar.LuaGrammar.Instance);
 			var tree = parser.Parse(_cur.TextBuffer.CurrentSnapshot.GetText());
-			OnFileContentChanged(_cur.TextBuffer.CurrentSnapshot, tree);
+
+            //降低文本变化的敏感度，选择性刷新？
+            //if(!tree.HasErrors())
+			    OnFileContentChanged(_cur.TextBuffer.CurrentSnapshot, tree);
 		}
 
 		void view_Closed(object sender, EventArgs e)
@@ -84,29 +90,29 @@ namespace Babe.Lua.Editor
 			view.GotAggregateFocus -= view_GotAggregateFocus;
 
 			System.Diagnostics.Debug.Print("document close");
+
+            GCHelper.Collect();
 		}
 
 		void view_GotAggregateFocus(object sender, EventArgs e)
 		{
 			if (_cur != sender)
 			{
-				var file = DTEHelper.Current.DTE.ActiveDocument.FullName;
+				var file = BabePackage.DTEHelper.DTE.ActiveDocument.FullName;
 				if (!System.IO.File.Exists(file))
 				{
 					//文件已经被移除，我们关闭窗口
 					IntellisenseHelper.RemoveFile(file);
-					DTEHelper.Current.DTE.ActiveDocument.Close(EnvDTE.vsSaveChanges.vsSaveChangesNo);
+					BabePackage.DTEHelper.DTE.ActiveDocument.Close(EnvDTE.vsSaveChanges.vsSaveChangesNo);
 					return;
 				}
 
 				System.Diagnostics.Debug.Print("document got focus");
 				_cur = sender as IWpfTextView;
 
-				DTEHelper.Current.SelectionPage = _cur.Selection;
-
 				IntellisenseHelper.SetCurrentFile(file);
 
-				DTEHelper.Current.SetStatusBarText(EncodingDecide.DecideFileEncoding(DTEHelper.Current.DTE.ActiveDocument.FullName).ToString());
+				BabePackage.DTEHelper.SetStatusBarText(EncodingDecide.DecideFileEncoding(BabePackage.DTEHelper.DTE.ActiveDocument.FullName).ToString());
 			}
 		}
 
@@ -114,11 +120,18 @@ namespace Babe.Lua.Editor
 		{
 			if (FileContentChanged != null)
 			{
-				FileContentChanged(this, new FileContentChangedEventArgs(snapshot,tree));
+				FileContentChanged(this, new FileContentChangedEventArgs(snapshot, tree));
 			}
 		}
 
 		static IWpfTextView _cur;
+		public static IWpfTextView TextView
+		{
+			get
+			{
+				return _cur;
+			}
+		}
 
 		public void Dispose()
 		{
@@ -155,7 +168,7 @@ namespace Babe.Lua.Editor
 				if (buf != null) buf.Changed -= TextBuffer_Changed;
 				if (!_hasSendReport)
 				{
-					DTEHelper.Current.UpdateUserData("edit");
+					Logger.UpdateUserData("edit");
 					_hasSendReport = true;
 				}
 			}

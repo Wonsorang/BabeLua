@@ -7,9 +7,10 @@ using Microsoft.VisualStudio.Text;
 using Microsoft.VisualStudio.Utilities;
 using System.ComponentModel.Composition;
 using System.Threading;
-
 using Babe.Lua.Grammar;
+using Babe.Lua.DataModel;
 using Babe.Lua.Editor;
+using Babe.Lua.Helper;
 
 namespace Babe.Lua.Intellisense
 {
@@ -25,12 +26,14 @@ namespace Babe.Lua.Intellisense
         } 
     }
         
-    internal sealed class OutliningTagger : ITagger<IOutliningRegionTag>
+    internal sealed class OutliningTagger : ITagger<IOutliningRegionTag>, IDisposable
     {
         string ellipsis = "...";    //the characters that are displayed when the region is collapsed
         ITextBuffer buffer;
         ITextSnapshot snapshot;
         List<Region> regions;
+
+        static bool UploadError = true;
 
         public OutliningTagger(ITextBuffer buffer)
         {
@@ -42,7 +45,19 @@ namespace Babe.Lua.Intellisense
 
 			Irony.Parsing.Parser parser = new Irony.Parsing.Parser(LuaGrammar.Instance);
 			var tree = parser.Parse(snapshot.GetText());
-			ReParse(snapshot, tree);
+			
+            try
+            {
+                ReParse(snapshot, tree);
+            }
+            catch (Exception ex)
+            {
+                if (UploadError)
+                {
+                    UploadError = false;
+                    Logger.LogMessage("LuaOutliner.ReParse error.\r\nPosition : " + ex.TargetSite + "\r\nMessage : " + ex.Message);
+                }
+            }
         }
 
         public IEnumerable<ITagSpan<IOutliningRegionTag>> GetTags(NormalizedSnapshotSpanCollection spans)
@@ -87,13 +102,19 @@ namespace Babe.Lua.Intellisense
 		void TextViewCreationListener_FileContentChanged(object sender, FileContentChangedEventArgs e)
 		{
 			if (e.Snapshot.TextBuffer != this.buffer) return;
+            if (e.Tree.Root == null) return;
+            
 			try
 			{
 				ReParse(e.Snapshot, e.Tree);
 			}
-			catch
+			catch(Exception ex)
 			{
-				Package.BabePackage.Setting.LogError("LuaOutliner.ReParse error.");
+                if(UploadError)
+                {
+                    UploadError = false;
+				    Logger.LogMessage("LuaOutliner.ReParse error.\r\nPosition : " + ex.TargetSite + "\r\nMessage : " + ex.Message);
+                }
 			}
 		}
 
@@ -106,7 +127,6 @@ namespace Babe.Lua.Intellisense
                 FindHiddenRegions(newSnapshot, tree.Root, ref newRegions);
 
                 FindUserRegions(newSnapshot, tree, ref newRegions);
-
             }
           
             //determine the changed span, and send a changed event with the new spans
@@ -189,35 +209,20 @@ namespace Babe.Lua.Intellisense
                     {
                         //So the column field of Location isn't always accurate...
                         //Position and Line are accurate though..
-						try
-						{
-							var startLine = snapShot.GetLineFromLineNumber(startToken.Location.Line);
-							var startLineOffset = startToken.Location.Position - startLine.Start.Position;
+						var startLine = snapShot.GetLineFromLineNumber(startToken.Location.Line);
+                        var startLineOffset = startToken.Location.Position - startLine.Start.Position;
 
-							var endLine = snapShot.GetLineFromLineNumber(endToken.Location.Line);
-							var endLineOffset = (endToken.Location.Position + endToken.Length) - endLine.Start.Position;
+						var endLine = snapShot.GetLineFromLineNumber(endToken.Location.Line);
+                        var endLineOffset = (endToken.Location.Position + endToken.Length) - endLine.Start.Position;
+                        
+                        var region = new Region();
+                        region.StartLine = startToken.Location.Line;
+                        region.StartOffset = startLineOffset + startOffset;
 
-							var region = new Region();
-							region.StartLine = startToken.Location.Line;
-							region.StartOffset = startLineOffset + startOffset;
+                        region.EndLine = endToken.Location.Line;
+                        region.EndOffset = endLineOffset;
 
-							region.EndLine = endToken.Location.Line;
-							region.EndOffset = endLineOffset;
-
-							regions.Add(region);
-						}
-						catch
-						{
-							StringBuilder sb = new StringBuilder();
-							sb.AppendLine("LuaOutline.FindHiddenRegions cause an exception.");
-							sb.AppendLine("Args:");
-							sb.AppendLine("StartLine:" + startToken.Location.Line + "," + startToken.Location.Column);
-							sb.AppendLine("EndLine:" + endToken.Location.Line + "," + endToken.Location.Column);
-							sb.AppendLine("TextSnapshot Line:" + snapShot.LineCount);
-
-							Package.BabePackage.Setting.LogError(sb.ToString());
-							return;
-						}
+                        regions.Add(region);
                     }      
                 }
 
@@ -233,7 +238,7 @@ namespace Babe.Lua.Intellisense
         /// <param name="regions"></param>
         void FindUserRegions(ITextSnapshot snapShot, Irony.Parsing.ParseTree tree, ref List<Region> regions)
         {
-            Irony.Parsing.Token startRegion = null;
+            Stack<Irony.Parsing.Token> StartRegions = new Stack<Irony.Parsing.Token>();
 
             foreach (var token in tree.Tokens)
             {
@@ -241,13 +246,13 @@ namespace Babe.Lua.Intellisense
 
                 if (token.Category == Irony.Parsing.TokenCategory.Comment)
                 {
-                    if (token.Text.Contains('\n'))//多行注释，折叠
+                    if (token.Text.Contains('\r') || token.Text.Contains('\n'))//多行注释，折叠
                     {
                         region = new Region();
                         region.StartLine = token.Location.Line;
                         region.StartOffset = 0;
-
-                        region.EndLine = token.Location.Line + token.Text.Count(c=>{return c == '\n';});
+                        region.EndLine = snapShot.GetLineFromPosition(token.Location.Position + token.Length).LineNumber;
+                        //region.EndLine = token.Location.Line + token.Text.Count(c=>{return c == '\r';});
 						region.EndOffset = snapShot.GetLineFromLineNumber(region.EndLine).Length;
 
 						region.Preview = snapShot.GetLineFromLineNumber(region.StartLine).GetText().Replace("--[[", "");
@@ -256,44 +261,30 @@ namespace Babe.Lua.Intellisense
                     }
                     else
                     {
-                        if (token.Text.StartsWith("--region ") && startRegion == null)
+                        if (token.Text.StartsWith("--region "))
                         {
-                            startRegion = token;
+                            StartRegions.Push(token);
                         }
 
-                        else if (token.Text.StartsWith("--endregion") && startRegion != null)
+                        else if (token.Text.StartsWith("--endregion") && StartRegions.Count > 0)
                         {
-							try
-							{
-								region = new Region();
-								var startLine = snapShot.GetLineFromLineNumber(startRegion.Location.Line);
-								var startLineOffset = startRegion.Location.Position - startLine.Start.Position;
+                            region = new Region();
+                            var startRegion = StartRegions.Pop();
+                            var startLine = snapShot.GetLineFromLineNumber(startRegion.Location.Line);
+                            var startLineOffset = startRegion.Location.Position - startLine.Start.Position;
 
-								var endLine = snapShot.GetLineFromLineNumber(token.Location.Line);
-								var endLineOffset = (token.Location.Position + token.Length) - endLine.Start.Position;
+                            var endLine = snapShot.GetLineFromLineNumber(token.Location.Line);
+                            var endLineOffset = (token.Location.Position + token.Length) - endLine.Start.Position;
 
-								region.StartLine = startRegion.Location.Line;
-								region.StartOffset = startLineOffset;
+                            region.StartLine = startRegion.Location.Line;
+                            region.StartOffset = startLineOffset;
 
-								region.EndLine = token.Location.Line;
-								region.EndOffset = endLineOffset;
+                            region.EndLine = token.Location.Line;
+                            region.EndOffset = endLineOffset;
 
-								region.Preview = startRegion.Text.Replace("--region ", "");
-
-								startRegion = null;
-							}
-							catch
-							{
-								StringBuilder sb = new StringBuilder();
-								sb.AppendLine("LuaOutline.FindUserRegions cause an exception.");
-								sb.AppendLine("Args:");
-								sb.AppendLine("StartLine:" + startRegion.Location.Line + "," + startRegion.Location.Column);
-								sb.AppendLine("EndLine:" + token.Location.Line + "," + token.Location.Column);
-								sb.AppendLine("TextSnapshot Line:" + snapShot.LineCount);
-
-								Package.BabePackage.Setting.LogError(sb.ToString());
-								return;
-							}
+                            region.Preview = startRegion.Text.Replace("--region ", "");
+                            
+                            startRegion = null;
                         }
                     }
 
@@ -321,6 +312,11 @@ namespace Babe.Lua.Intellisense
             public int EndOffset { get; set; }
             public string Preview { get; set; }
             public bool IsCollapsed { get; set; }
+        }
+
+        public void Dispose()
+        {
+            Babe.Lua.Editor.TextViewCreationListener.FileContentChanged -= TextViewCreationListener_FileContentChanged;
         }
     }
 }

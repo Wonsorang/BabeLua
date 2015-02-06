@@ -10,7 +10,7 @@ using Microsoft.VisualStudio.Shell;
 using Babe.Lua.DataModel;
 using Babe.Lua.Package;
 
-namespace Babe.Lua
+namespace Babe.Lua.ToolWindows
 {
     [Guid(GuidList.SearchWindowString1)]
     public class SearchWndPane1 : ToolWindowPane,ISearchWnd
@@ -36,7 +36,7 @@ namespace Babe.Lua
             Current = this;
         }
 
-        public void Search(string txt, bool AllFile)
+        public void Search(string txt, bool AllFile, bool WholeWordMatch, bool CaseSensitive)
         {
             wnd.Dispatcher.Invoke(() =>
             {
@@ -45,21 +45,39 @@ namespace Babe.Lua
 					this.Caption = Properties.Resources.SearchlWindowTitle1;
 					wnd.ListView.Items.Clear();
 				}
-				else if (this.CurrentSearchWord == txt) return;
+
 				else
 				{
-					var list = FileManager.Instance.FindReferences(txt, AllFile);
-					int count = wnd.Refresh(list);
+                    int count = 0;
+                    if (WholeWordMatch)
+                    {
+                        var list = FileManager.Instance.FindReferences(txt, AllFile);
+                        count = wnd.Refresh(list);
+                    }
+                    else
+                    {
+                        var list = FileManager.Instance.Search(txt, AllFile, CaseSensitive);
+                        wnd.Refresh(list);
+                        count = list.Count;
+                    }
 					this.Caption = string.Format("{0} - find {1} matches", Properties.Resources.SearchlWindowTitle1, count);
 
 					this.CurrentSearchWord = txt;
 				}
             });
         }
+
+
+        public void SetRelativePathEnable(bool enable)
+        {
+            wnd.Button_RelativePath.IsChecked = enable;
+        }
     }
 
     interface ISearchWnd
     {
-        void Search(string txt, bool AllFile);
+        void Search(string txt, bool AllFile, bool WholeWordMatch, bool CaseSensitive);
+
+        void SetRelativePathEnable(bool enable);
     }
 }

@@ -1,20 +1,13 @@
 ﻿using Babe.Lua.DataModel;
 using Microsoft.VisualStudio.Text.Editor;
-using System;
 using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
-using System.Windows.Data;
-using System.Windows.Documents;
 using System.Windows.Input;
-using System.Windows.Media;
-using System.Windows.Media.Imaging;
-using System.Windows.Navigation;
-using System.Windows.Shapes;
 using Babe.Lua.Package;
+using System.Windows.Data;
+using System.Collections;
+using System.ComponentModel;
 
 namespace Babe.Lua.Editor
 {
@@ -25,11 +18,12 @@ namespace Babe.Lua.Editor
     public partial class OutlineMarginControl : UserControl
     {
         IWpfTextViewHost TextViewHost;
+        bool m_navigate = true;
 
         public OutlineMarginControl(IWpfTextViewHost TextViewHost)
         {
             InitializeComponent();
-
+            
             this.TextViewHost = TextViewHost;
 
             this.Loaded += OutlineMarginControl_Loaded;
@@ -54,9 +48,11 @@ namespace Babe.Lua.Editor
                 ComboBox_Table.ItemsSource = null;
                 ComboBox_Member.ItemsSource = null;
             }
-            else if (ComboBox_Table.ItemsSource != File.Members)
+            else
             {
-                ComboBox_Table.ItemsSource = File.Members;
+                m_navigate = false;
+
+                ComboBox_Table.ItemsSource = CreateListView(File.Members);
 
                 var list = new List<LuaMember>();
                 foreach (var member in File.Members)
@@ -70,7 +66,11 @@ namespace Babe.Lua.Editor
                         list.Add(member);
                     }
                 }
-                ComboBox_Member.ItemsSource = list;
+                
+                ComboBox_Member.ItemsSource = CreateListView(list);
+
+                m_navigate = true;
+                //TextViewHost.TextView.Caret.MoveTo(new Microsoft.VisualStudio.Text.SnapshotPoint(TextViewHost.TextView.TextSnapshot, 0));
             }
         }
 
@@ -81,69 +81,60 @@ namespace Babe.Lua.Editor
 
         void OutlineMarginControl_Loaded(object sender, RoutedEventArgs e)
         {
-			//System.Diagnostics.Debug.Print("document load");
-			//var file = DTEHelper.Current.DTE.ActiveDocument.FullName;
-			//if (!System.IO.File.Exists(file))
-			//{
-			//	//文件已经被移除，我们关闭窗口
-			//	IntellisenseHelper.RemoveFile(file);
-			//	DTEHelper.Current.DTE.ActiveDocument.Close(EnvDTE.vsSaveChanges.vsSaveChangesNo);
-			//	return;
-			//}
+			TextViewHost.HostControl.MouseDoubleClick += HostControl_MouseDoubleClick;
 
-			//DTEHelper.Current.SelectionPage = TextViewHost.TextView.Selection;
-
-			//IntellisenseHelper.SetFile(file);
-
-            TextViewHost.HostControl.MouseDoubleClick += HostControl_MouseDoubleClick;
-
-            Refresh();
-            //DTEHelper.Current.SetStatusBarText(EncodingDecide.DecideFileEncoding(DTEHelper.Current.DTE.ActiveDocument.FullName).ToString());
-
-            //DTEHelper.Current.DTE.ActiveDocument.ActiveWindow.Caption += string.Format("({0})", EncodingDecide.DecideFileEncoding(DTEHelper.Current.DTE.ActiveDocument.FullName).ToString());
+            //Refresh();
         }
 
         private void HostControl_MouseDoubleClick(object sender, System.Windows.Input.MouseButtonEventArgs e)
         {
-            if (BabePackage.Setting.IsFirstRun)
+            if (BabePackage.Setting.IsFirstInstall)
             {
-                BabePackage.Setting.IsFirstRun = false;
+                BabePackage.Setting.IsFirstInstall = false;
                 MessageBox.Show("press <Ctrl> key to search words in current file\r\npress <Alt> key to search in all files", "Tips");
                 //DTEHelper.Current.FindSelectTokenRef(false);
                 //DTEHelper.Current.OpenDocument(DTEHelper.Current.DTE.ActiveDocument.FullName);
             }
             else if (Keyboard.IsKeyDown(Key.LeftCtrl) || Keyboard.IsKeyDown(Key.RightCtrl))
             {
-                DTEHelper.Current.FindSelectTokenRef(false);
+				EditorManager.SearchSelect(false, true, true);
                 //DTEHelper.Current.OpenDocument(DTEHelper.Current.DTE.ActiveDocument.FullName);
             }
             else if (Keyboard.IsKeyDown(Key.LeftAlt) || Keyboard.IsKeyDown(Key.RightAlt))
             {
-                DTEHelper.Current.FindSelectTokenRef(true);
+				EditorManager.SearchSelect(true, true, true);
                 //DTEHelper.Current.OpenDocument(DTEHelper.Current.DTE.ActiveDocument.FullName);
             }
         }
 
         private void Combo_Table_SelectionChanged(object sender, SelectionChangedEventArgs e)
         {
-            if (ComboBox_Table.SelectedItem != null)
+            if (m_navigate && ComboBox_Table.SelectedItem != null)
             {
                 var tb = ComboBox_Table.SelectedItem as LuaMember;
 
-                if(tb is LuaTable) ComboBox_Member.ItemsSource = (tb as LuaTable).Members;
+                if(tb is LuaTable) ComboBox_Member.ItemsSource = CreateListView((tb as LuaTable).Members);
 
-                DTEHelper.Current.GoTo(tb.Line);
+				EditorManager.GoTo(null, tb.Line);
             }
         }
 
         private void Combo_Member_SelectionChanged(object sender, SelectionChangedEventArgs e)
         {
-            if (ComboBox_Member.SelectedItem != null)
+            if (m_navigate && ComboBox_Member.SelectedItem != null)
             {
                 var member = ComboBox_Member.SelectedItem as LuaMember;
 
-                DTEHelper.Current.GoTo(member.Line);
+				EditorManager.GoTo(null, member.Line);
             }
+        }
+
+        private ICollectionView CreateListView(IList list)
+        {
+            var view = new ListCollectionView(list);
+            view.SortDescriptions.Add(new System.ComponentModel.SortDescription("Name", System.ComponentModel.ListSortDirection.Ascending));
+            
+            return view;
         }
     }
 }

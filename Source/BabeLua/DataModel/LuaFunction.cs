@@ -9,16 +9,13 @@ namespace Babe.Lua.DataModel
     class LuaFunction:LuaMember
     {
         public string[] Args { get; private set; }
-
-        public LuaFunction(string name, int line, params string[] args):base(name, line, 0)
-        {
-            this.Args = args;
-        }
+        public List<LuaMember> Members { get; private set; }
 
 		public LuaFunction(LuaFile file, string name, int line, params string[] args)
-			: this(name, line, args)
+			: base(file, name, line, 0)
 		{
-			this.File = file;
+            this.Args = args;
+            this.Members = new List<LuaMember>();
 		}
 
         public override string ToString()
@@ -36,7 +33,7 @@ namespace Babe.Lua.DataModel
                 sb.Length = sb.Length - 2;
             }
             
-            sb.Append(')');
+            sb.Append(")");
 
             return sb.ToString();
         }

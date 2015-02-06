@@ -21,10 +21,28 @@ namespace Babe.Lua.Intellisense
     {
         [Import]
         internal ITextStructureNavigatorSelectorService NavigatorService { get; set; }
+
+        [Import]
+        IGlyphService GlyphService;
         
         public ICompletionSource TryCreateCompletionSource(ITextBuffer textBuffer)
         {
             return new LuaCompletionSource(this, textBuffer);
+        }
+
+        public System.Windows.Media.ImageSource GetImageSource(Type type)
+        {
+            StandardGlyphGroup group;
+            StandardGlyphItem item = StandardGlyphItem.GlyphItemPublic;
+            switch(type.Name)
+            {
+                case "LuaTable": group = StandardGlyphGroup.GlyphGroupClass; break;
+                case "LuaFunction": group = StandardGlyphGroup.GlyphGroupMethod; break;
+                case "LuaMember": group = StandardGlyphGroup.GlyphGroupField; break;
+                default:
+                    group = StandardGlyphGroup.GlyphGroupVariable;break;
+            }
+            return GlyphService.GetGlyph(group, item);
         }
     }
 
@@ -113,8 +131,18 @@ namespace Babe.Lua.Intellisense
 
             foreach (LuaMember s in list)
             {
-                completions.Add(new Completion(s.Name, s.Name, s.GetType().Name + ":" + s.ToString(), null, "icon"));
+                completions.Add(new LuaCompletion(
+                    show : s.Name, 
+                    completion : s is LuaFunction ? s.ToString() : s.Name, 
+                    description : string.Format("{0} {1}{2}", s.ToString(), GetMemberPath(s), s.Comment),
+                    //description : s.GetType().Name + " : " + s.ToString() + " in file: " + s.File + s.Comment, 
+                    icon : _provider.GetImageSource(s.GetType())
+                    ));
             }
+
+#if DEBUG
+            System.Diagnostics.Debug.Print("fill items:" + (completions.Count - count));
+#endif
 
             return completions.Count > count;
         }
@@ -122,7 +150,7 @@ namespace Babe.Lua.Intellisense
         public bool FillTable(String word, char dot, List<Completion> completions)
         {
             var count = completions.Count;
-
+            
             var table = IntellisenseHelper.GetTable(word);
 
 			if (table != null)
@@ -134,7 +162,17 @@ namespace Babe.Lua.Intellisense
 					{
 						foreach (LuaMember l in list.Value)
 						{
-							completions.Add(new Completion(l.Name, l.Name, list.Key + dot + l.ToString(), null, "icon"));
+
+                            if (completions.Exists((cp) => { return cp.DisplayText == l.Name; }))
+                            {
+                                continue;
+                            }
+                            completions.Add(new Completion(
+                                l.Name, 
+                                l is LuaFunction ? l.ToString() : l.Name, 
+                                string.Format("{0}{1}{2} {3}{4}", list.Key, dot, l.ToString(), GetMemberPath(l), l.Comment),
+                                //list.Key + dot + l.ToString() + l.Comment, 
+                                _provider.GetImageSource(l.GetType()), "icon"));
 						}
 					}
                 }
@@ -146,63 +184,67 @@ namespace Babe.Lua.Intellisense
 						{
 							if (l is LuaFunction)
 							{
-								completions.Add(new Completion(l.Name, l.Name, list.Key + dot + l.ToString(), null, "icon"));
+                                completions.Add(new Completion(
+                                    l.Name, 
+                                    l.ToString(),
+                                    string.Format("{0}{1}{2} {3}{4}", list.Key, dot, l.ToString(), GetMemberPath(l), l.Comment),
+                                    //list.Key + dot + l.ToString() + l.Comment, 
+                                    _provider.GetImageSource(l.GetType()), "icon"));
 							}
 						}
 					}
                 }
             }
-			//else //找不到table。拿文件单词进行提示。
-			//{
-			//	var tokens = IntellisenseHelper.GetFileTokens();
-			//	foreach (LuaMember lm in tokens)
-			//	{
-			//		completions.Add(new Completion(lm.Name, lm.Name, lm.Name, null, "icon"));
-			//	}
-			//}
+            else //找不到table。拿文件单词进行提示。
+            {
+                var snapshot = _buffer.CurrentSnapshot;
+				var tokens = FileManager.Instance.CurrentFileToken;
 
+				var tempTable = new HashSet<String>();
+
+                foreach (LuaMember lm in tokens)
+                {
+                    var point = LineAndColumnNumberToSnapshotPoint(snapshot, lm.Line, lm.Column);
+                    if (point > 0)
+                    {
+                        char preview = snapshot[point - 1];
+                        if (preview == '.' || preview == ':')
+                        {
+							if (tempTable.Contains(lm.Name)) continue;
+							tempTable.Add(lm.Name);
+							completions.Add(new Completion(
+                                lm.Name, 
+                                lm.Name, 
+                                string.Format("{0} {1}", lm.Name, GetMemberPath(lm)),
+                                //lm.Name, 
+                                _provider.GetImageSource(lm.GetType()), "icon"));
+                        }
+                    }
+                }
+            }
+
+#if DEBUG
+            System.Diagnostics.Debug.Print("fill items:" + (completions.Count - count));
+#endif
             return completions.Count > count;
+        }
+
+        private static SnapshotPoint LineAndColumnNumberToSnapshotPoint(ITextSnapshot snapshot, int lineNumber, int columnNumber)
+        {
+            var line = snapshot.GetLineFromLineNumber(lineNumber);
+            var snapshotPoint = new SnapshotPoint(snapshot, line.Start + columnNumber);
+            return snapshotPoint;
+        }
+
+        private string GetMemberPath(LuaMember member)
+        {
+            if (member.File == null) return string.Empty;
+            else return string.Format("in file: {0}", member.File.Path);
         }
 
         public void Dispose()
         {
             _disposed = true;
-        }
-    }
-
-    class LuaCompletionSet : CompletionSet
-    {
-        public LuaCompletionSet(string moniker,
-            string displayName,
-            ITrackingSpan applicableTo,
-            IEnumerable<Completion> completions,
-            IEnumerable<Completion> completionBuilders)
-            : base(moniker, displayName, applicableTo, completions, completionBuilders)
-        {
-
-        }
-
-		public override IList<Completion> Completions
-		{
-			get
-			{
-				return base.Completions;
-			}
-		}
-
-        public override void SelectBestMatch()
-        {
-            this.SelectBestMatch(CompletionMatchType.MatchDisplayText, true);
-        }
-
-        public override void Filter()
-        {
-            base.Filter(CompletionMatchType.MatchDisplayText, false);
-        }
-
-        public override void Recalculate()
-        {
-            base.Recalculate();
         }
     }
 }
